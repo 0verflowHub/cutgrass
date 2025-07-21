@@ -220,6 +220,11 @@ end
 function CutGrass.Modules.Hacks:SetAutoCollect(enabled)
     CutGrass.State.EnabledFlags["AutoCollect"] = enabled
     if enabled then
+        -- Auto-enable Anti-Teleport if not already enabled
+        if not CutGrass.State.EnabledFlags["AntiTeleport"] then
+            CutGrass.State.EnabledFlags["AntiTeleport"] = true
+            CutGrass:ActivateAntiTeleportForCharacter(Players.LocalPlayer.Character)
+        end
         -- Stop existing coroutines if they are running to prevent duplicates
         if CutGrass.State.AutoCollectCoroutine then coroutine.close(CutGrass.State.AutoCollectCoroutine) end
         if CutGrass.State.AutoGrassDeleteCoroutine then coroutine.close(CutGrass.State.AutoGrassDeleteCoroutine) end
@@ -245,8 +250,7 @@ function CutGrass.Modules.Hacks:SetAutoCollect(enabled)
                 return
             end
             local LootFolder = lootZoneFolder.Loot
-            local Offset = CFrame.new(0, 0, -2)
-            local HoldDuration = 0.5  -- Reduced hold duration for faster interaction
+            local Offset = CFrame.new(0, 0, -1) -- Closer offset for faster interaction
 
             local function collect(item)
                 if not CutGrass.State.EnabledFlags["AutoCollect"] then return false end
@@ -260,18 +264,31 @@ function CutGrass.Modules.Hacks:SetAutoCollect(enabled)
                 local TargetPart = if item:IsA("BasePart") then item else (if item:IsA("Model") then (item.PrimaryPart or item:FindFirstChildOfClass("BasePart")) else nil)
                 if not TargetPart or not TargetPart.Parent then return true end
 
-                HumanoidRootPart.CFrame = TargetPart.CFrame * Offset
-                task.wait(0.1)  -- Reduced wait for faster positioning
-
-                -- Spam E key presses for faster/more reliable collection
-                for i = 1, 5 do  -- Increased spam to 5 times for more reliability
-                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
-                    task.wait(0.05)
-                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
-                    task.wait(0.05)
+                -- Temporarily disable anti-teleport if enabled
+                local antiTeleportWasEnabled = CutGrass.State.EnabledFlags["AntiTeleport"]
+                if antiTeleportWasEnabled then
+                    CutGrass:DeactivateAntiTeleportForCharacter()
                 end
-                
-                task.wait(0.1)  -- Minimal wait after spam
+
+                -- Teleport to chest
+                HumanoidRootPart.CFrame = TargetPart.CFrame * CFrame.new(0, 0, -1.5)
+                task.wait(0.01) -- Minimal wait for teleport to register
+
+                -- Optimized E key presses with minimal delays
+                for i = 1, 4 do
+                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+                    task.wait(0.01)
+                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+                    if i < 4 then task.wait(0.01) end -- Small delay between presses except last one
+                end
+
+                task.wait(0.02) -- Small wait to ensure collection processes
+
+                -- Re-enable anti-teleport if it was enabled before
+                if antiTeleportWasEnabled then
+                    CutGrass:ActivateAntiTeleportForCharacter(Character)
+                end
+
                 return true
             end
 
@@ -280,14 +297,13 @@ function CutGrass.Modules.Hacks:SetAutoCollect(enabled)
                 if #children > 0 then
                     for _, item in ipairs(children) do
                         if not CutGrass.State.EnabledFlags["AutoCollect"] then break end
-                        local success = collect(item)
-                        if not success then break end
-                        task.wait(0.1)  -- Further reduced delay between collecting each chest
+                        collect(item)
+                        task.wait(0.01) -- Minimal delay between chests
                     end
                 else
-                    warn("No loot items found in zone: " .. tostring(CutGrass.State.SelectedLootZone) .. ". Waiting for spawn...")
+                    task.wait(0.1) -- Wait when no chests
                 end
-                task.wait(1)  -- Further reduced wait before re-scanning for new chests
+                task.wait(0.02) -- Faster scanning cycle
             end
         end)
 
@@ -808,6 +824,8 @@ function CutGrass:CreateChestsTab(window)
         Flag = "AutoCollectChestsToggle",
         Callback = function(value)
             CutGrass.Modules.Hacks:SetAutoCollect(value)
+            -- Make grass disappear when enabled, reappear when disabled
+            CutGrass.Modules.Hacks:ToggleGrassVisibility(not value)
         end,
     })
 end
@@ -835,14 +853,15 @@ function CutGrass:CreateVisualsTab(window)
 end
 
 --// ANTI-TELEPORT-BACK //--
-function CutGrass:ActivateAntiTeleportForCharacter(character)
+function CutGrass:ActivateAntiTeleportForCharacter(character, anchorCFrame)
     self:DeactivateAntiTeleportForCharacter()
     if not character then return end
     local humanoid = character:FindFirstChildOfClass('Humanoid')
     local rootPart = character:FindFirstChild("HumanoidRootPart")
     if not (humanoid and rootPart) then return end
 
-    local lastCF, stop
+    local lastCF = anchorCFrame or rootPart.CFrame
+    local stop
 
     local heartbeatConn = game:GetService('RunService').Heartbeat:Connect(function()
         if stop then return end
@@ -869,6 +888,14 @@ function CutGrass:ActivateAntiTeleportForCharacter(character)
 end
 
 function CutGrass:DeactivateAntiTeleportForCharacter()
+    -- Before disconnecting, update anchor to current position to avoid snap-back
+    local lplr = Players.LocalPlayer
+    if lplr and lplr.Character then
+        local rootPart = lplr.Character:FindFirstChild("HumanoidRootPart")
+        if rootPart then
+            rootPart.CFrame = rootPart.CFrame
+        end
+    end
     for _, connection in ipairs(self.State.AntiTeleportCharacterConnections) do
         connection:Disconnect()
     end
